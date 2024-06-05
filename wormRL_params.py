@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Jan 19 17:49:13 2024
+Created on Tue Jun  4 22:32:02 2024
 
 @author: kevin
 """
@@ -8,16 +8,43 @@ Created on Fri Jan 19 17:49:13 2024
 from matplotlib import pyplot as plt
 import numpy as np
 import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.nn import functional as F
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 import matplotlib 
 matplotlib.rc('xtick', labelsize=20) 
 matplotlib.rc('ytick', labelsize=20)
 
 # %%
+### this is a new script for wormRL to explore hyperparameters
+### then check the marginal distribution of heading changes
+### and maybe further analyze dwell time of states...
+
+# %%
 ### environements
 ### reward function
 ### actions: wv and pir-state
 ### states: up or down ... noisy estimates?
+
+# %% seeed
+seed = 13 #42
+random.seed(seed) #37 42 17
+np.random.seed(seed)
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    np.random.seed(seed)  # for numpy random seed
+    random.seed(seed)  # for built-in random module
+    torch.backends.cudnn.deterministic = True  # to ensure deterministic behavior.
+    torch.backends.cudnn.benchmark = False  # if deterministic is set to True, benchmark must be False
+
+# Example usage:
+set_seed(seed)
 
 # %%
 class dPAW():
@@ -27,8 +54,8 @@ class dPAW():
         self.W = 100
         self.xs = np.array([50,50])  # point source
         self.x0 = np.array([0,0])  # initial location
-        self.C = 40  #20 source concentration
-        self.sigC = 60  # width of the odor bump # 4000 (20,40,60,80,100) -> (x,y,y,yish,yish,x)
+        self.C = 80  #40 source concentration
+        self.sigC = 80  # width of the odor bump # 4000 (20,40,60,80,100) -> (x,y,y,yish,yish,x)
         self.theta = np.random.rand()*np.pi  # randomize theta and keep track
         self.state = np.array([0,0])   # keeping track of location
         self.dv = 2.   # speed displacement
@@ -100,7 +127,7 @@ class dPAW():
         if Ppr > np.random.rand():
             dth = np.random.vonmises(np.pi,10,1)
         else:
-            dth = np.random.vonmises(0,10,1)
+            dth = np.random.vonmises(0,30,1)  #10
         return dth
     
     def WV(self, concentration):
@@ -108,7 +135,7 @@ class dPAW():
         given concentration measurements return d_theta with weathervaning rule
         """
         dc, dcp = concentration
-        dth = np.random.vonmises(dcp*.09, 1.3, 1)  #.2 the strength has to be altered depending on C!
+        dth = np.random.vonmises(dcp*.025, 15, 1)  #.2 the strength has to be altered depending on C!  #.09, 1.3
         return dth
     
     def reward(self, state):
@@ -148,109 +175,6 @@ class dPAW():
     # action -> transition -> measurement
     ###
 
-# %% test runs
-mydpaw = dPAW()
-x0s = np.array([[0,0], [100,0], [0,100], [100,100]])
-max_steps = 300
-lamb = 1  # test with pirouette regularization
-eps_s = 5
-
-x = np.linspace(-10, 110, 120)
-y = np.linspace(-10, 110, 120)
-x, y = np.meshgrid(x, y)
-c_env = mydpaw.odor_profile(x, y)
-
-plt.figure()
-plt.imshow(c_env, extent=[x[0,0], x[-1,-1], y[0,0], y[-1,-1]])
-for ww in range(len(x0s)):
-    mydpaw.reset()
-    mydpaw.state = x0s[ww]
-    t = 0
-    total_reward = 0
-    list_of_trans = []
-    transition = {} # # initialize transition dict
-    temp = []  # measurements...
-    action = 0
-    # while np.all(mydpaw.state is not mydpaw.xs) and (t < max_steps):
-    while (np.sum((mydpaw.state-mydpaw.xs)**2)**0.5>eps_s) and (t < max_steps):
-        t += 1 # update iteration counter
-        
-        ### State S
-        old_state = mydpaw.state.copy() # keep track of current state
-        
-        ### Action A
-        action = np.random.choice(2)  ### random choice before learning
-        # action = 1
-        ### if learned!
-        # dc = mydpaw.measureC(old_state)[0]
-        # action = pick_sample(action, dc)
-        
-        ### State' S'
-        state = mydpaw.transition(old_state, action)
-        
-        ### Reward R
-        reward = mydpaw.reward(state)
-        # mydpaw.state = state*1
-        
-        # transition["action2"] = action # keep track of action we took
-        # if (t > 1.5) and (not eval): # parameter update
-        #   # update values after a_{t+1} so we can do SARSA
-        #   learner.update(transition)
-        
-        # store our transition
-        transition = {"state1": old_state, # state we came from
-                      "state2": state, # state we ended up in
-                      "reward": reward, # how much reward did we get
-                      "action": action} # what action did we take
-        list_of_trans.append(transition)
-        total_reward += reward
-        
-        conc = mydpaw.measureC(old_state)
-        temp.append(conc[1])
-    
-    
-    for ii in range(len(list_of_trans)):
-        if list_of_trans[ii]['action']==0:
-            plt.plot(list_of_trans[ii]['state1'][0], list_of_trans[ii]['state1'][1], 'k.')
-        elif list_of_trans[ii]['action']==1:
-            plt.plot(list_of_trans[ii]['state1'][0], list_of_trans[ii]['state1'][1], 'r.')
-    plt.plot(list_of_trans[0]['state1'][0], list_of_trans[0]['state1'][1], 'g.')
-    plt.plot(list_of_trans[-1]['state1'][0], list_of_trans[-1]['state1'][1], color='purple', marker='*')
-    
-    plt.xlim(-10,110)
-    plt.ylim(-10,110)
-plt.colorbar()
-    
-# plt.savefig('example_plot.pdf')
-
-# %% plotting in time
-import matplotlib.cm as cm
-colors = cm.rainbow(np.linspace(0, 1, len(list_of_trans)))  # trajectory color in time
-plt.figure()
-plt.imshow(c_env)
-for ii in range(len(list_of_trans)):
-    plt.plot(list_of_trans[ii]['state1'][0], list_of_trans[ii]['state1'][1], 'o', color=colors[ii])
-plt.plot(list_of_trans[0]['state1'][0], list_of_trans[0]['state1'][1], 'k.')
-plt.plot(list_of_trans[-1]['state1'][0], list_of_trans[-1]['state1'][1], 'purple')
-
-plt.figure()
-acts = [list_of_trans[ii]['action'] for ii in range(len(list_of_trans))]
-plt.plot(acts[:])
-
-# %% plotting state and action
-plt.figure()
-plt.imshow(c_env)
-for ii in range(len(list_of_trans)):
-    if list_of_trans[ii]['action']==0:
-        plt.plot(list_of_trans[ii]['state1'][0], list_of_trans[ii]['state1'][1], 'k.')
-    elif list_of_trans[ii]['action']==1:
-        plt.plot(list_of_trans[ii]['state1'][0], list_of_trans[ii]['state1'][1], 'r.')
-plt.plot(list_of_trans[0]['state1'][0], list_of_trans[0]['state1'][1], 'k.')
-plt.plot(list_of_trans[-1]['state1'][0], list_of_trans[-1]['state1'][1], 'g*')
-
-act_ = [list_of_trans[ii]['action'] for ii in range(len(list_of_trans))]
-plt.figure()
-plt.plot(act_)
 # %%
 ###############################################################################
 # %% controller (using concentration C for action, not state)
@@ -261,12 +185,6 @@ plt.plot(act_)
 # scenario 2: given up ot down gradient, the transition probability for states...need policy gradients
 
 # %%
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.nn import functional as F
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 class Learner(nn.Module):
     def __init__(self):
         super(Learner, self).__init__()
@@ -308,7 +226,11 @@ class Learner(nn.Module):
         return logit #a_
 
 # %% test running RL!!!
-# mydpaw = dPAW()
+max_steps = 300
+lamb = 1  # test with pirouette regularization
+eps_s = 5
+
+mydpaw = dPAW()
 mylearner = Learner()
 reward_records = []
 opt = optim.AdamW(mylearner.parameters(), lr=0.01)
@@ -418,11 +340,13 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
     max_steps = 300
     pos = np.zeros(n_tracks)
     dths = []
+    acts = []
     for n in range(n_tracks):
         mydpaw.reset()
         t = 0
         action = np.random.choice(2)
         dthi = []
+        acti = []
         while (np.sum((mydpaw.state-mydpaw.xs)**2)**0.5>eps_s) and (t < max_steps):
             t += 1 # update iteration counter
             ### State S
@@ -433,7 +357,7 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
                 action = pick_sample(action, dc)
             elif policy=='random':
                 # action = np.random.choice(2)
-                action = random.choices([0,1], [4/5,1/5])[0]
+                action = random.choices([0,1], [6/7,1/7])[0]
                 # action = pick_sample(action, 0)
             
             elif policy=='parallel':
@@ -451,10 +375,12 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
             ### Reward R
             reward = mydpaw.reward(state)
             dthi.append(mydpaw.dth)
+            acti.append(action)
         pos[n] = -reward
         dths.append(dthi)
+        acts.append(acti)
     if return_dth:
-        return pos, dths
+        return pos, dths, acts
     return pos
 
 n_tracks = 100
@@ -477,11 +403,6 @@ from scipy.stats import ttest_ind
 t_statistic, p_value = ttest_ind(rl_pos, rand_pos)
 print(p_value)
 
-###
-# next steps:
-    # environment slope
-    # noise level
-    # check transition matrix
 # %%
 n_tracks = 100
 new_dpaw = dPAW() # None
@@ -504,9 +425,7 @@ plt.ylim([0,1])
 # plt.savefig('example_plot.pdf')
 
 # %% noise comparison
-sd = 37
-random.seed(sd) #37 42 17
-np.random.seed(sd)
+###
 
 n_tracks = 100
 new_dpaw = dPAW() # None
@@ -547,6 +466,56 @@ plt.ylim([0,1])
 # plt.savefig('example_CI.pdf')
 
 # %% analyze historgam
-_, dths = run_chemotaxis('random', n_tracks, new_dpaw, return_dth=True)
+_, dths, acts = run_chemotaxis('random', n_tracks, new_dpaw, return_dth=True)
+dths = np.concatenate(dths)
+acts = np.concatenate(acts)
 plt.figure()
-plt.hist(np.concatenate(dths),50)
+plt.subplot(131)
+plt.hist(dths,50); plt.xlim((-np.pi,np.pi))
+plt.subplot(132)
+pos = np.where(acts==0)
+plt.hist(dths[pos], 50); plt.xlim((-np.pi,np.pi))
+plt.subplot(133)
+pos = np.where(acts==1)
+plt.hist(dths[pos], 50); plt.xlim((-np.pi,np.pi))
+
+# %% dwell time
+def compute_dwell_time_distribution(binary_vector):
+    # Ensure the input is a list of binary elements (0s and 1s)
+    if not all(x in [0, 1] for x in binary_vector):
+        raise ValueError("Input vector must contain only binary elements (0 and 1).")
+
+    dwell_times_0 = []
+    dwell_times_1 = []
+
+    current_value = binary_vector[0]
+    current_count = 1
+
+    for i in range(1, len(binary_vector)):
+        if binary_vector[i] == current_value:
+            current_count += 1
+        else:
+            if current_value == 1:
+                dwell_times_1.append(current_count)
+            else:
+                dwell_times_0.append(current_count)
+            current_value = binary_vector[i]
+            current_count = 1
+
+    # Append the last sequence
+    if current_value == 1:
+        dwell_times_1.append(current_count)
+    else:
+        dwell_times_0.append(current_count)
+
+    return dwell_times_0, dwell_times_1
+
+dwell_times_0, dwell_times_1 = compute_dwell_time_distribution(acts)
+
+plt.figure()
+mm = np.max([np.max(dwell_times_0), np.max(dwell_times_1)])
+plt.hist(dwell_times_0, bins=range(1, mm + 1), edgecolor='black')
+plt.hist(dwell_times_1, bins=range(1, mm + 1), edgecolor='black')
+plt.title('Dwell Time Distribution for 0s')
+plt.xlabel('Dwell Time')
+plt.ylabel('Frequency')
