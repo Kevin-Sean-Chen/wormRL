@@ -63,6 +63,7 @@ class dPAW():
         self.state2 = np.random.randn(2,2)  # state-pairs
         self.noise = 0  # noise of sensory environment
         self.dth = 0  # record heading change
+        self.bearing = 0  # recording bearing
         
     def odor_environment(self, state):
         """
@@ -105,7 +106,7 @@ class dPAW():
         state_ = self.dth2state(state, dth)  # move to the next state
         self.state = state_*1  # update the state only in the end
         self.state2 = np.array([state_, state])
-        self.dth = dth*1  # record heading change
+        self.dth = dth*1  # record heading change       
         return state_
     
     def dth2state(self, state, dth):
@@ -116,6 +117,11 @@ class dPAW():
         dx,dy = np.cos(self.theta)*self.dv, np.sin(self.theta)*self.dv
         state_ = state + np.array([dx, dy]).squeeze()
         state_ = np.round(state_).astype(int)
+        
+        ### measure bearing
+        goal_v = self.xs - state_  # goal vector
+        heading = np.array([dx, dy])  # continuous heading
+        self.bearing = self.cosine_angle(goal_v, heading)  # update bearing to goal
         return state_
     
     def PR(self, concentration):
@@ -171,6 +177,24 @@ class dPAW():
         if prob_pir>np.random.rand():
             action = 1
         return action
+    
+    def cosine_angle(self, vector_a, vector_b):
+        """
+        used to measure bearing: angle between goal and heading vectors
+        """
+        dot_product = np.dot(vector_a, vector_b)
+        norm_a = np.linalg.norm(vector_a)
+        norm_b = np.linalg.norm(vector_b)
+        cosine_angle = dot_product / (norm_a * norm_b)   
+        angle_radians = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
+        
+        cross_product_z = vector_a[0] * vector_b[1] - vector_a[1] * vector_b[0]
+    
+        # Adjust the angle to be within the range -pi to pi
+        if cross_product_z < 0:
+            angle_radians = -angle_radians
+
+        return angle_radians
     ###
     # action -> transition -> measurement
     ###
@@ -339,14 +363,17 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
     eps_s = 5
     max_steps = 300
     pos = np.zeros(n_tracks)
+    ### record heading, action, and bearing
     dths = []
     acts = []
+    bs = []
     for n in range(n_tracks):
         mydpaw.reset()
         t = 0
         action = np.random.choice(2)
         dthi = []
         acti = []
+        bi = []
         while (np.sum((mydpaw.state-mydpaw.xs)**2)**0.5>eps_s) and (t < max_steps):
             t += 1 # update iteration counter
             ### State S
@@ -358,6 +385,7 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
             elif policy=='random':
                 # action = np.random.choice(2)
                 action = random.choices([0,1], [6/7,1/7])[0]
+                # action = random.choices([0,1], [4/5,1/5])[0]
                 # action = pick_sample(action, 0)
             
             elif policy=='parallel':
@@ -366,21 +394,23 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
                 action = 0
             elif policy=='PR':
                 action = 1
-            ####
-            # make controls here for only WV and only PR!
-            ####
-            
+
             ### State' S'
             state = mydpaw.transition(old_state, action)
             ### Reward R
             reward = mydpaw.reward(state)
+            ### bearing
+            bear_t = mydpaw.bearing*1
+            
             dthi.append(mydpaw.dth)
             acti.append(action)
+            bi.append(bear_t)
         pos[n] = -reward
         dths.append(dthi)
         acts.append(acti)
+        bs.append(bi)
     if return_dth:
-        return pos, dths, acts
+        return pos, dths, acts, bs
     return pos
 
 n_tracks = 100
@@ -465,57 +495,124 @@ plt.legend(fontsize=10)
 plt.ylim([0,1])
 # plt.savefig('example_CI.pdf')
 
-# %% analyze historgam
-_, dths, acts = run_chemotaxis('random', n_tracks, new_dpaw, return_dth=True)
+# %%
+###############################################################################
+# %% analyze historgam, for RL vs random
+_, dths, acts, bearing = run_chemotaxis('RL', 500, new_dpaw, return_dth=True)
+_, dths_r, acts_r, bearing_r = run_chemotaxis('random', 500, new_dpaw, return_dth=True)
 dths = np.concatenate(dths)
 acts = np.concatenate(acts)
+bearing = np.concatenate(bearing)
+dths_r, acts_r, bearing_r = np.concatenate(dths_r), np.concatenate(acts_r), np.concatenate(bearing_r) 
+
+# %%
+nbins = 60
 plt.figure()
 plt.subplot(131)
-plt.hist(dths,50); plt.xlim((-np.pi,np.pi))
+plt.hist(dths, nbins, density=True, color='grey'); plt.xlim((-np.pi,np.pi)); plt.ylim((0,1.5))
+counts, bin_edges = np.histogram(dths_r, bins=nbins, density=True)
+binv = (bin_edges[:-1]+bin_edges[1:])/2
+plt.plot(binv, counts)
 plt.subplot(132)
 pos = np.where(acts==0)
-plt.hist(dths[pos], 50); plt.xlim((-np.pi,np.pi))
+plt.hist(dths[pos], nbins ,density=True, color='grey'); plt.xlim((-np.pi,np.pi)); plt.ylim((0,1.5))
+pos = np.where(acts_r==0)
+counts, bin_edges = np.histogram(dths_r[pos], bins=nbins, density=True)
+binv = (bin_edges[:-1]+bin_edges[1:])/2
+plt.plot(binv, counts)
 plt.subplot(133)
 pos = np.where(acts==1)
-plt.hist(dths[pos], 50); plt.xlim((-np.pi,np.pi))
+plt.hist(dths[pos], nbins, density=True, color='grey',label='RL'); plt.xlim((-np.pi,np.pi)); plt.ylim((0,1.5))
+pos = np.where(acts_r==1)
+counts, bin_edges = np.histogram(dths_r[pos], bins=nbins, density=True)
+binv = (bin_edges[:-1]+bin_edges[1:])/2
+plt.plot(binv, counts, label='shuffled')
+plt.legend()
+# plt.savefig('dth_compare.pdf')
 
-# %% dwell time
-def compute_dwell_time_distribution(binary_vector):
-    # Ensure the input is a list of binary elements (0s and 1s)
-    if not all(x in [0, 1] for x in binary_vector):
-        raise ValueError("Input vector must contain only binary elements (0 and 1).")
+# %% analtze ITI
+def computeITI(dths):
+    thre = 2 #50/180*np.pi
+    nbins = 30
+    pos_turns = np.where(np.abs(dths[:,0])>thre)[0]
+    iti = np.diff(pos_turns)
+    counts, bin_edges = np.histogram(iti, nbins)
+    p_iti = counts/np.sum(counts)
+    b_iti = (bin_edges[:-1]+bin_edges[1:])/2
+    return b_iti, p_iti
 
-    dwell_times_0 = []
-    dwell_times_1 = []
+plt.figure
+bb,pp = computeITI(dths)
+plt.plot(bb,pp)
+bbr,ppr = computeITI(dths_r)
+plt.plot(bbr,ppr)
+plt.yscale('log')
+# plt.savefig('iti_compare.pdf')
 
-    current_value = binary_vector[0]
-    current_count = 1
+# %% analyze bearing!
+nbins = 30
+def wrap_to_pi(angle):
+    wrapped_angle = (angle + np.pi) % (2 * np.pi) - np.pi
+    return wrapped_angle
+def bearing_analysis(acts, bearing):
+    delay = 10
+    diff_acts = np.diff(acts)
+    pos = np.where(diff_acts < 0)[0] + delay + 1
+    pos_post = pos[delay:-delay]
+    pos = np.where(diff_acts > 0)[0] - delay
+    pos_pre = pos[delay:-delay+1]  # adjust to match dimensions!
+    diff_b = wrap_to_pi(bearing[pos_post] - bearing[pos_pre])
+    rep_shuff = 70
+    shuffle_b = []
+    for rr in range(rep_shuff):
+        shuffle_b.append(wrap_to_pi(bearing[pos_pre] + np.random.permutation(diff_b)))
+    return bearing[pos_post], np.concatenate(shuffle_b)
 
-    for i in range(1, len(binary_vector)):
-        if binary_vector[i] == current_value:
-            current_count += 1
-        else:
-            if current_value == 1:
-                dwell_times_1.append(current_count)
-            else:
-                dwell_times_0.append(current_count)
-            current_value = binary_vector[i]
-            current_count = 1
-
-    # Append the last sequence
-    if current_value == 1:
-        dwell_times_1.append(current_count)
-    else:
-        dwell_times_0.append(current_count)
-
-    return dwell_times_0, dwell_times_1
-
-dwell_times_0, dwell_times_1 = compute_dwell_time_distribution(acts)
-
+b_post, shuff_b = bearing_analysis(acts, bearing)
+# b_post, shuff_b = bearing_analysis(acts_r, bearing_r)
 plt.figure()
-mm = np.max([np.max(dwell_times_0), np.max(dwell_times_1)])
-plt.hist(dwell_times_0, bins=range(1, mm + 1), edgecolor='black')
-plt.hist(dwell_times_1, bins=range(1, mm + 1), edgecolor='black')
-plt.title('Dwell Time Distribution for 0s')
-plt.xlabel('Dwell Time')
-plt.ylabel('Frequency')
+counts, bin_edges = np.histogram(shuff_b, bins=nbins, density=True)
+plt.hist(b_post, nbins, density=True)
+plt.plot(bin_edges[:-1], counts, 'k'); plt.xlim((-np.pi,np.pi)); plt.ylim((0,0.27))
+# plt.savefig('bearing_rl.pdf')
+
+# %% dwell time od states...
+# def compute_dwell_time_distribution(binary_vector):
+#     # Ensure the input is a list of binary elements (0s and 1s)
+#     if not all(x in [0, 1] for x in binary_vector):
+#         raise ValueError("Input vector must contain only binary elements (0 and 1).")
+
+#     dwell_times_0 = []
+#     dwell_times_1 = []
+
+#     current_value = binary_vector[0]
+#     current_count = 1
+
+#     for i in range(1, len(binary_vector)):
+#         if binary_vector[i] == current_value:
+#             current_count += 1
+#         else:
+#             if current_value == 1:
+#                 dwell_times_1.append(current_count)
+#             else:
+#                 dwell_times_0.append(current_count)
+#             current_value = binary_vector[i]
+#             current_count = 1
+
+#     # Append the last sequence
+#     if current_value == 1:
+#         dwell_times_1.append(current_count)
+#     else:
+#         dwell_times_0.append(current_count)
+
+#     return dwell_times_0, dwell_times_1
+
+# dwell_times_0, dwell_times_1 = compute_dwell_time_distribution(acts)
+
+# plt.figure()
+# mm = np.max([np.max(dwell_times_0), np.max(dwell_times_1)])
+# plt.hist(dwell_times_0, bins=range(1, mm + 1), edgecolor='black')
+# plt.hist(dwell_times_1, bins=range(1, mm + 1), edgecolor='black')
+# plt.title('Dwell Time Distribution for 0s')
+# plt.xlabel('Dwell Time')
+# plt.ylabel('Frequency')

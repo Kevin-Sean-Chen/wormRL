@@ -20,6 +20,11 @@ import matplotlib
 matplotlib.rc('xtick', labelsize=20) 
 matplotlib.rc('ytick', labelsize=20)
 
+# %% seeed
+seed = 1 #42
+# random.seed(seed) #37 42 17
+np.random.seed(seed)
+
 # %%
 ###############################################################################
 # %% Effective model
@@ -193,6 +198,10 @@ def worm_track(init, couple, mode='staPAW',T=300):
     return XY, Vs, Cs
 
 # %% exp tracks
+seed = 1  # for good visual example!
+np.random.seed(seed)
+
+vv,vs = 2.2, .2 
 eps_target = 6
 x0s = np.array([[0.1,0.1], [100,0], [0,100], [100,100]])
 plt.figure()
@@ -201,7 +210,7 @@ plt.imshow(environment(x,y),origin='lower',extent = [-10,110,-10,110])
 
 for ii in range(len(x0s)):
     init = x0s[ii]
-    XY, Vs, Cs = worm_track(init,1.,mode='dPAW')
+    XY, Vs, Cs = worm_track(init,1.,mode='staPAW')  #dPAW
     pos_state = np.where(Vs[0,:]>Vs[1,:])[0]
     plt.plot(XY[0,:],XY[1,:],'k')
     plt.plot(XY[0,pos_state],XY[1,pos_state],'r.', markersize=.9)
