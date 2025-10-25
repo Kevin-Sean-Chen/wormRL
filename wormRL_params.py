@@ -30,7 +30,7 @@ matplotlib.rc('ytick', labelsize=20)
 ### states: up or down ... noisy estimates?
 
 # %% seeed
-seed = 13 #42
+seed = 37 #37 #37 (RL curve) #13 (bars) #17 (good both but weaker) #42
 random.seed(seed) #37 42 17
 np.random.seed(seed)
 
@@ -249,6 +249,50 @@ class Learner(nn.Module):
         # a_ = aa[idx] # np.random.choice([0, 1], p=P)
         return logit #a_
 
+# %% CI function
+def probe_CI(mydpaw, n_tracks):
+    mydpaw.reset()
+    # mydpaw.C = 10
+    eps_s = 5
+    max_steps = 300
+    pos = np.zeros(n_tracks)
+    ### record heading, action, and bearing
+    dths = []
+    acts = []
+    bs = []
+    for n in range(n_tracks):
+        mydpaw.reset()
+        t = 0
+        action = np.random.choice(2)
+        dthi = []
+        acti = []
+        bi = []
+        while (np.sum((mydpaw.state-mydpaw.xs)**2)**0.5>eps_s) and (t < max_steps):
+            t += 1 # update iteration counter
+            ### State S
+            old_state = mydpaw.state.copy() # keep track of current state
+            ### Action A
+            dc = mydpaw.measureC(old_state)[0]
+            action = pick_sample(action, dc)
+            ### State' S'
+            state = mydpaw.transition(old_state, action)
+            ### Reward R
+            reward = mydpaw.reward(state)
+            ### bearing
+            bear_t = mydpaw.bearing*1
+            
+            dthi.append(mydpaw.dth)
+            acti.append(action)
+            bi.append(bear_t)
+            
+        pos[n] = -reward
+        dths.append(dthi)
+        acts.append(acti)
+        bs.append(bi)
+         
+    CI = sum(pos<=5) / n_tracks
+    return CI
+
 # %% test running RL!!!
 max_steps = 300
 lamb = 1  # test with pirouette regularization
@@ -257,6 +301,10 @@ eps_s = 5
 mydpaw = dPAW()
 mylearner = Learner()
 reward_records = []
+CI_records = []
+Ks_records = []
+ci_every_n_steps = 50
+n_tracks = 200
 opt = optim.AdamW(mylearner.parameters(), lr=0.01)
 n_epochs = 1000
 gamma = 0.99  # discount
@@ -332,6 +380,14 @@ for i in range(n_epochs):
     # Record total rewards in episode (max 500)
     print("Run episode{} with rewards {}".format(i, sum(rewards)), end="\r")
     reward_records.append(sum(rewards))
+    
+    ### try out CI
+    if i % ci_every_n_steps == 0:
+        cii = probe_CI(mydpaw, n_tracks)
+        CI_records.append(cii)
+        
+        Ks_records.append(np.array([mylearner.theta[0].detach().cpu().clone(), \
+                                      mylearner.theta[1].detach().cpu().clone()]))
 
 print("\nDone")
 
@@ -351,6 +407,38 @@ plt.plot(average_reward)
 plt.xlabel('epochs', fontsize=20)
 plt.ylabel('expected reward', fontsize=20)
 # plt.savefig('example_plot.pdf')
+
+fig, ax1 = plt.subplots()
+ax1.plot(reward_records, label='reward')
+ax1.plot(average_reward, label='average')
+ax1.set_ylabel('expected reward', color='b')
+ax1.tick_params(axis='y', labelcolor='b')
+
+# Create second axis sharing the same x-axis
+ax2 = ax1.twinx()
+
+# Plot on right y-axis
+ax2.plot(np.linspace(0,n_epochs,n_epochs//ci_every_n_steps), CI_records, 'k')
+ax2.set_ylabel('CI', color='r')
+ax2.tick_params(axis='y', labelcolor='r')
+ax1.set_xlabel('epochs')
+fig.tight_layout()
+
+# %% check learned parameters
+### evolition of parameters
+Ks = np.array(Ks_records)   # shape: (epochs, 2)
+plt.figure(figsize=(5,6))
+plt.subplot(211)
+plt.plot(np.linspace(0,n_epochs,n_epochs//ci_every_n_steps), CI_records, 'k', linewidth=5)
+plt.ylabel('CI', fontsize=20); plt.xticks([])
+plt.subplot(212)
+plt.plot(np.linspace(0,n_epochs,n_epochs//ci_every_n_steps), Ks[:, 1], linewidth=5, label=r"$K_{S \rightarrow T}$")   # first line
+plt.plot(np.linspace(0,n_epochs,n_epochs//ci_every_n_steps), Ks[:, 0], linewidth=5, label=r"$K_{T \rightarrow S}$")   # second line
+plt.xlabel("Epochs", fontsize=20)
+plt.ylabel("Weights", fontsize=20)
+plt.legend(fontsize=20)   # <-- important!
+plt.tight_layout()
+plt.show()
 
 # %% evaluation
 def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
@@ -383,8 +471,8 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
                 dc = mydpaw.measureC(old_state)[0]
                 action = pick_sample(action, dc)
             elif policy=='random':
-                # action = np.random.choice(2)
-                action = random.choices([0,1], [6/7,1/7])[0]
+                # action = np.random.choice(2) ### for ISI
+                action = random.choices([0,1], [6/7,1/7])[0] #### match ###
                 # action = random.choices([0,1], [4/5,1/5])[0]
                 # action = pick_sample(action, 0)
             
@@ -413,7 +501,7 @@ def run_chemotaxis(policy, n_tracks, newdpaw=None, return_dth=False):
         return pos, dths, acts, bs
     return pos
 
-n_tracks = 100
+n_tracks = 200
 rl_pos = run_chemotaxis('RL', n_tracks)
 rand_pos = run_chemotaxis('random', n_tracks)
 
@@ -427,16 +515,23 @@ mean2, std2 = np.mean(rand_pos), np.std(rand_pos)
 plt.errorbar([1, 2], [mean1, mean2], yerr=[std1, std2], fmt='ko')
 plt.xticks([1, 2], ['RL-trained', 'shuffled'])
 plt.ylabel('distance to source', fontsize=20)
-# plt.savefig('example_plot.pdf')
+# plt.savefig('dist_plot.pdf')
+
+plt.figure()
+thre = 10
+plt.bar([1,2], [sum(rl_pos<=thre) / n_tracks, sum(rand_pos<=thre) / n_tracks])
+plt.xticks([1, 2], ['RL-trained', 'shuffled'])
+plt.ylabel('CI', fontsize=20)
+# plt.savefig('CI_plot.pdf')
 
 from scipy.stats import ttest_ind
 t_statistic, p_value = ttest_ind(rl_pos, rand_pos)
 print(p_value)
 
-# %%
-n_tracks = 100
+# %% compare strategies
+n_tracks = 200
 new_dpaw = dPAW() # None
-new_dpaw.C = 40
+new_dpaw.C = 60 #40
 new_dpaw.sigC = 60  #60
 new_dpaw.noise = 0.
 rl_pos = run_chemotaxis('RL', n_tracks, new_dpaw)
@@ -456,11 +551,14 @@ plt.ylim([0,1])
 
 # %% noise comparison
 ###
+seed = 13 #37 #37 (RL curve) #13 (bars) #17 (good both but weaker) #42
+random.seed(seed) #37 42 17
+np.random.seed(seed)
 
-n_tracks = 100
+n_tracks = 200 #100
 new_dpaw = dPAW() # None
-new_dpaw.C = 80   #40
-new_dpaw.sigC = 80  #60
+new_dpaw.C = 100#80   #40
+new_dpaw.sigC = 100#80  #60
 new_dpaw.noise = 0.
 rl_pos_n = run_chemotaxis('RL', n_tracks, new_dpaw)
 rand_pos_n = run_chemotaxis('random', n_tracks, new_dpaw)
@@ -468,7 +566,7 @@ wv_pos_n = run_chemotaxis('WV', n_tracks, new_dpaw)
 pr_pos_n = run_chemotaxis('PR', n_tracks, new_dpaw)
 new_dpaw = dPAW() # None
 new_dpaw.C = 80
-new_dpaw.sigC = 60  #60
+new_dpaw.sigC = 60#60  #60
 rl_pos = run_chemotaxis('RL', n_tracks, new_dpaw)
 rand_pos = run_chemotaxis('random', n_tracks, new_dpaw)
 wv_pos = run_chemotaxis('WV', n_tracks, new_dpaw)
@@ -486,7 +584,7 @@ bar_width = 0.35
 x = np.arange(len(conditions))
 plt.figure()
 plt.bar(x - bar_width/2, wo_noise, width=bar_width, label='trained')
-plt.bar(x + bar_width/2, w_noise, width=bar_width, label='steeper')
+plt.bar(x + bar_width/2, w_noise, width=bar_width, label='shallower')
 
 # Add labels, title, and legend
 plt.ylabel('chemotaxis index', fontsize=20)
@@ -498,6 +596,9 @@ plt.ylim([0,1])
 # %%
 ###############################################################################
 # %% analyze historgam, for RL vs random
+new_dpaw.C = 80 #80
+new_dpaw.sigC = 60#60
+
 _, dths, acts, bearing = run_chemotaxis('RL', 500, new_dpaw, return_dth=True)
 _, dths_r, acts_r, bearing_r = run_chemotaxis('random', 500, new_dpaw, return_dth=True)
 dths = np.concatenate(dths)
@@ -532,8 +633,8 @@ plt.legend()
 
 # %% analtze ITI
 def computeITI(dths):
-    thre = 2 #50/180*np.pi
-    nbins = 30
+    thre = 2. #50/180*np.pi
+    nbins = 35
     pos_turns = np.where(np.abs(dths[:,0])>thre)[0]
     iti = np.diff(pos_turns)
     counts, bin_edges = np.histogram(iti, nbins)
@@ -541,7 +642,7 @@ def computeITI(dths):
     b_iti = (bin_edges[:-1]+bin_edges[1:])/2
     return b_iti, p_iti
 
-plt.figure
+plt.figure()
 bb,pp = computeITI(dths)
 plt.plot(bb,pp)
 bbr,ppr = computeITI(dths_r)
@@ -557,19 +658,30 @@ def wrap_to_pi(angle):
 def bearing_analysis(acts, bearing):
     delay = 10
     diff_acts = np.diff(acts)
-    pos = np.where(diff_acts < 0)[0] + delay + 1
-    pos_post = pos[delay:-delay]
-    pos = np.where(diff_acts > 0)[0] - delay
-    pos_pre = pos[delay:-delay+1]  # adjust to match dimensions!
-    diff_b = wrap_to_pi(bearing[pos_post] - bearing[pos_pre])
+    pos1 = np.where(diff_acts < 0)[0] + delay + 1
+    pos_post = pos1[delay:-delay]
+    pos2 = np.where(diff_acts > 0)[0] - delay
+    pos_pre = pos2[delay+1:-delay+1]  # adjust to match dimensions!
+    
     rep_shuff = 70
     shuffle_b = []
-    for rr in range(rep_shuff):
-        shuffle_b.append(wrap_to_pi(bearing[pos_pre] + np.random.permutation(diff_b)))
+    
+    if len(pos1)==len(pos2):
+        diff_b = wrap_to_pi(bearing[pos_post] - bearing[pos_pre])
+        dwn = len(pos_post)
+        for rr in range(rep_shuff):
+            shuffle_b.append(wrap_to_pi(bearing[pos_pre[:dwn]] + np.random.permutation(diff_b)))
+    else:
+        dwn = np.min([len(pos_post), len(pos_pre)])
+        print(dwn)
+        diff_b = wrap_to_pi(bearing[pos_post[:dwn],0] - bearing[pos_pre[:dwn],0])
+        for rr in range(rep_shuff):
+            shuffle_b.append(wrap_to_pi(bearing[pos_pre[:dwn],0] + np.random.permutation(diff_b)))
+    
     return bearing[pos_post], np.concatenate(shuffle_b)
 
-b_post, shuff_b = bearing_analysis(acts, bearing)
-# b_post, shuff_b = bearing_analysis(acts_r, bearing_r)
+# b_post, shuff_b = bearing_analysis(acts, bearing)
+b_post, shuff_b = bearing_analysis(acts_r, bearing_r)
 plt.figure()
 counts, bin_edges = np.histogram(shuff_b, bins=nbins, density=True)
 plt.hist(b_post, nbins, density=True)
