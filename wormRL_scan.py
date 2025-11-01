@@ -307,7 +307,7 @@ def probe_CI(mydpaw, n_tracks, max_steps=300):
 # %% scann for CI as a function of parameters
 K1 = np.arange(-1,1,.2)
 K2 = np.arange(-1,1,.2)
-b1,b2 = -1, +1 #0.1, 0.1
+b1,b2 = 0.1, 0.1 #-1, +1 #
 
 CIscan = np.zeros((len(K1), len(K2)))
 
